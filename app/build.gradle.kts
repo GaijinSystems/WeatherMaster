@@ -163,6 +163,7 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.converter.gson)
     implementation(libs.okhttp.logging)
+    implementation(libs.commons.compress)
     implementation(libs.common.suncalc)
     implementation(libs.androidx.appcompat)
 

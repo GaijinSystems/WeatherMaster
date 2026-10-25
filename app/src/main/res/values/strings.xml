@@ -564,6 +564,10 @@
     <string name="notifications_setting_alert_notifications">Alert notifications</string>
     <string name="notifications_setting_alert_notifications_secondary">Show notifications for weather warnings when available</string>
 
+    <string name="radar">Radar</string>
+    <string name="radar_open">Open radar</string>
+    <string name="radar_unavailable">Radar unavailable</string>
+    <string name="radar_loading">Loading radar…</string>
 </resources>
 
     <!--<string name=""></string>-->

@@ -66,6 +66,8 @@ fun MainScreenScaffold(
     activeLocation: Location?,
     weatherBlocks: WeatherBlocksStoreState,
     onUpdateBlocks: (List<WeatherBlock>) -> Unit,
+    showRadarButton: Boolean = false,
+    onOpenRadar: () -> Unit = {},
 ) {
 
 
@@ -160,7 +162,9 @@ fun MainScreenScaffold(
                             drawerState,
                             activeLocation,
                             onEditLocation,
-                            layoutDirection
+                            layoutDirection,
+                            showRadarButton = showRadarButton,
+                            onOpenRadar = onOpenRadar
                         )
                         if (weather != null) {
                             if (!isTabletLike) {

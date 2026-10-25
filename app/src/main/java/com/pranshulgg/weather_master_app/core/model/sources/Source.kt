@@ -29,7 +29,7 @@ enum class Source(
         fullName = "National Weather Service",
         displayLink = "https://www.weather.gov/documentation/services-web-api",
         countryNameRes = R.string.country_usa,
-        capabilities = setOf(Capability.WEATHER, Capability.ALERTS)
+        capabilities = setOf(Capability.WEATHER, Capability.ALERTS, Capability.RADAR)
     ),
     SMHI(
         displayName = "SMHI",
@@ -329,5 +329,6 @@ fun Source.isGlobal(): Boolean {
 enum class Capability {
     WEATHER,
     ALERTS,
-    AIR_QUALITY
+    AIR_QUALITY,
+    RADAR
 }

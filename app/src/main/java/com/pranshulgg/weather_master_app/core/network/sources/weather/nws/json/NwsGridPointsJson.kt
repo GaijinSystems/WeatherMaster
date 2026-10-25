@@ -12,7 +12,8 @@ data class NwsGridPointsValuesJson(
     @SerializedName("gridId")
     val officeId: String,
     val gridX: Long,
-    val gridY: Long
+    val gridY: Long,
+    val radarStation: String? = null
 )
 
 // ---------------------------- GRID POINTS DATA ----------------------------
