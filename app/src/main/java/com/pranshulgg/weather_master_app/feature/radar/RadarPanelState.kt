@@ -14,6 +14,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -35,8 +38,6 @@ class RadarPanelState(private val scope: CoroutineScope) {
     var isOpen by mutableStateOf(false)
         private set
 
-    var widthPx = 1f
-
     val isVisible: Boolean get() = closedFraction < 1f
 
     private var animation: Job? = null
@@ -51,23 +52,24 @@ class RadarPanelState(private val scope: CoroutineScope) {
         closedFraction = 1f
     }
 
-    fun dragBy(deltaPx: Float) {
+    /** Moves the panel by [deltaFraction] of the screen width (positive = towards closed) */
+    fun dragBy(deltaFraction: Float) {
         animation?.cancel()
-        closedFraction = (closedFraction + deltaPx / widthPx).coerceIn(0f, 1f)
+        closedFraction = (closedFraction + deltaFraction).coerceIn(0f, 1f)
     }
 
     /**
      * Finishes a drag: a flick decides, otherwise moving the panel [SETTLE_DISTANCE] of the way
-     * in the drag's direction ([opening] or closing) is enough
+     * in the drag's direction ([opening] or closing) is enough. Velocity is in widths per second
      */
-    fun settle(velocityPxPerSecond: Float, opening: Boolean) {
+    fun settle(velocity: Float, opening: Boolean) {
         val target = when {
-            velocityPxPerSecond < -FLING_VELOCITY -> 0f
-            velocityPxPerSecond > FLING_VELOCITY -> 1f
+            velocity < -FLING_VELOCITY -> 0f
+            velocity > FLING_VELOCITY -> 1f
             opening -> if (closedFraction < 1f - SETTLE_DISTANCE) 0f else 1f
             else -> if (closedFraction > SETTLE_DISTANCE) 1f else 0f
         }
-        animateTo(target, velocityPxPerSecond / widthPx)
+        animateTo(target, velocity)
     }
 
     private fun animateTo(target: Float, initialVelocity: Float = 0f) {
@@ -81,7 +83,7 @@ class RadarPanelState(private val scope: CoroutineScope) {
     }
 
     private companion object {
-        const val FLING_VELOCITY = 500f
+        const val FLING_VELOCITY = 0.45f // widths per second
         const val SETTLE_DISTANCE = 0.3f
     }
 }
@@ -92,6 +94,64 @@ fun rememberRadarPanelState(): RadarPanelState {
     return remember { RadarPanelState(scope) }
 }
 
+internal enum class MultiTouch { Abandon, Handled }
+
+/**
+ * Follows one finger's horizontal drag. Once it moves past touch slop, [accept] decides whether
+ * the drag is taken; if so [onDrag] gets each horizontal step as a fraction of the width.
+ * Events with two or more fingers before the drag starts go to [onMultiTouch].
+ * Returns the release velocity in widths per second, or null if no drag was taken
+ */
+internal suspend fun AwaitPointerEventScope.trackHorizontalDrag(
+    down: PointerInputChange,
+    accept: (total: Offset) -> Boolean,
+    onDrag: (deltaFraction: Float) -> Unit,
+    onMultiTouch: (PointerEvent) -> MultiTouch = { MultiTouch.Abandon }
+): Float? {
+    val width = size.width.toFloat()
+    val velocityTracker = VelocityTracker()
+    velocityTracker.addPosition(down.uptimeMillis, down.position)
+    var total = Offset.Zero
+    var dragging = false
+    var rejected = false // past slop but not taken: only multi-touch is still watched
+
+    while (true) {
+        val event = awaitPointerEvent()
+        if (event.changes.none { it.pressed }) break
+
+        if (!dragging && event.changes.count { it.pressed } >= 2) {
+            if (onMultiTouch(event) == MultiTouch.Abandon) return null
+            continue
+        }
+
+        val change = event.changes.firstOrNull { it.id == down.id && it.pressed }
+            ?: if (dragging) break else continue
+
+        if (rejected) continue
+        if (!dragging) {
+            if (change.isConsumed) return null // taken by a child, e.g. a scrolling row
+            total += change.positionChange()
+            // Slop per axis, like scrollable rows, so a row reaching its slop takes the drag first
+            val slop = viewConfiguration.touchSlop
+            if (abs(total.x) > slop || abs(total.y) > slop) {
+                if (!accept(total)) {
+                    rejected = true
+                    continue
+                }
+                dragging = true
+                onDrag(total.x / width)
+                change.consume()
+            }
+        } else {
+            onDrag(change.positionChange().x / width)
+            change.consume()
+        }
+        velocityTracker.addPosition(change.uptimeMillis, change.position)
+    }
+
+    return if (dragging) velocityTracker.calculateVelocity().x / width else null
+}
+
 /**
  * Opens the radar panel with a left swipe. Right swipes and drags already taken by children
  * (e.g. the hourly forecast row) are left alone, so the locations drawer keeps working
@@ -100,32 +160,11 @@ fun Modifier.radarOpenSwipe(state: RadarPanelState, enabled: Boolean): Modifier 
     if (!enabled) this else pointerInput(state) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            val velocityTracker = VelocityTracker()
-            velocityTracker.addPosition(down.uptimeMillis, down.position)
-            var total = Offset.Zero
-            var dragging = false
-
-            while (true) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) break
-
-                if (!dragging) {
-                    if (change.isConsumed || event.changes.size > 1) break
-                    total += change.positionChange()
-                    if (total.getDistance() > viewConfiguration.touchSlop) {
-                        if (total.x >= 0 || abs(total.x) <= abs(total.y)) break
-                        dragging = true
-                        state.dragBy(total.x)
-                        change.consume()
-                    }
-                } else {
-                    state.dragBy(change.positionChange().x)
-                    change.consume()
-                }
-                velocityTracker.addPosition(change.uptimeMillis, change.position)
-            }
-
-            if (dragging) state.settle(velocityTracker.calculateVelocity().x, opening = true)
+            val velocity = trackHorizontalDrag(
+                down,
+                accept = { total -> total.x < 0 && abs(total.x) > abs(total.y) },
+                onDrag = state::dragBy
+            )
+            if (velocity != null) state.settle(velocity, opening = true)
         }
     }

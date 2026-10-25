@@ -10,11 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -41,7 +37,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -50,25 +45,28 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.pranshulgg.weather_master_app.R
+import com.pranshulgg.weather_master_app.core.model.domain.AppException
 import com.pranshulgg.weather_master_app.core.model.domain.location.Location
 import com.pranshulgg.weather_master_app.core.model.domain.radar.RadarScan
+import com.pranshulgg.weather_master_app.core.model.domain.toMessageRes
 import com.pranshulgg.weather_master_app.core.prefs.LocalAppPrefs
-import com.pranshulgg.weather_master_app.core.ui.components.Symbol
+import com.pranshulgg.weather_master_app.core.ui.components.ErrorContainer
+import com.pranshulgg.weather_master_app.core.ui.components.LoadingPlaceholder
+import com.pranshulgg.weather_master_app.core.ui.components.NavigateUpBtn
 import com.pranshulgg.weather_master_app.core.utils.formatters.to12HourTimeString
 import com.pranshulgg.weather_master_app.core.utils.formatters.to24HourTimeString
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.time.Duration.Companion.minutes
 
 private const val MIN_WIDTH_KM = 25.0
-private val BORDER_WIDTH = 16.dp // left and right edges of the page
 private const val DEFAULT_WIDTH_KM = 100.0
-private val REFRESH_INTERVAL = 3.minutes
+private val BORDER_WIDTH = 16.dp // left and right edges of the page
+private const val OLD_SCAN_MILLI = 30 * 60 * 1000L
 
 /**
  * Full-width radar page that slides in from the right over the main screen
@@ -81,44 +79,55 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
 
     val viewModel: RadarViewModel = hiltViewModel()
     val uiState = viewModel.uiState
-    val scan = uiState.scan?.takeIf { uiState.locationId == location.id }
+    val scan = uiState.scan?.takeIf { uiState.locationKey == location.radarKey }
 
-    LaunchedEffect(location.id) {
-        while (true) {
-            viewModel.refresh(location)
-            delay(REFRESH_INTERVAL)
-        }
+    // Refresh only while the app is started, not in the background
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(location.radarKey, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.keepUpdated(location) }
     }
 
     var widthKm by rememberSaveable(location.id) { mutableStateOf(DEFAULT_WIDTH_KM) }
     var gestureScale by remember { mutableFloatStateOf(1f) }
-    val maxWidthKm = scan?.let { 2 * (it.binCount * it.binSizeKm + distanceKm(location, it)) } ?: 1000.0
+    // A pinch cut short by closing the page never reaches onZoomEnd
+    LaunchedEffect(state.isOpen) { if (!state.isOpen) gestureScale = 1f }
+    val maxWidthKm = scan?.let {
+        2 * (it.rangeKm + distanceKm(location.latitude, location.longitude, it.latitude, it.longitude))
+    }?.coerceAtLeast(MIN_WIDTH_KM) ?: 1000.0
     val currentMaxWidthKm by rememberUpdatedState(maxWidthKm)
+    val canZoom by rememberUpdatedState(scan != null)
+    LaunchedEffect(maxWidthKm) { widthKm = widthKm.coerceIn(MIN_WIDTH_KM, maxWidthKm) }
 
     // Gestures are read on this fixed layer: reading them on the sliding page would measure the
-    // finger relative to a page that moves with it
+    // finger relative to a page that moves with it. Only while open, so taps reach the main
+    // screen during the close animation
+    val pageGestures = if (!state.isOpen) Modifier else Modifier
+        .pointerInput(location.id) {
+            detectTapGestures(onDoubleTap = {
+                if (!canZoom) return@detectTapGestures
+                val presets = listOf(MIN_WIDTH_KM, DEFAULT_WIDTH_KM, currentMaxWidthKm)
+                val current = presets.indices.minBy { abs(presets[it] - widthKm) }
+                widthKm = presets[(current + 1) % presets.size]
+            })
+        }
+        .radarPageGestures(
+            key = location.id,
+            onCloseDrag = state::dragBy,
+            onCloseDragEnd = { velocity -> state.settle(velocity, opening = false) },
+            onZoom = { zoom ->
+                if (canZoom) gestureScale = (gestureScale * zoom)
+                    .coerceIn((widthKm / currentMaxWidthKm).toFloat(), (widthKm / MIN_WIDTH_KM).toFloat())
+            },
+            onZoomEnd = {
+                widthKm = (widthKm / gestureScale).coerceIn(MIN_WIDTH_KM, currentMaxWidthKm)
+                gestureScale = 1f
+            }
+        )
+
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = {
-                    val presets = listOf(MIN_WIDTH_KM, DEFAULT_WIDTH_KM, currentMaxWidthKm)
-                    val current = presets.indices.minBy { abs(presets[it] - widthKm) }
-                    widthKm = presets[(current + 1) % presets.size]
-                })
-            }
-            .radarPageGestures(
-                onCloseDrag = state::dragBy,
-                onCloseDragEnd = { velocity -> state.settle(velocity, opening = false) },
-                onZoom = { zoom ->
-                    gestureScale = (gestureScale * zoom)
-                        .coerceIn((widthKm / currentMaxWidthKm).toFloat(), (widthKm / MIN_WIDTH_KM).toFloat())
-                },
-                onZoomEnd = {
-                    widthKm = (widthKm / gestureScale).coerceIn(MIN_WIDTH_KM, currentMaxWidthKm)
-                    gestureScale = 1f
-                }
-            )
+            .then(pageGestures)
     ) {
         Box(
             Modifier
@@ -130,24 +139,26 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
         ) {
             RadarPage(
                 location = location,
-                uiState = uiState,
                 scan = scan,
+                error = uiState.error?.takeIf { uiState.locationKey == location.radarKey },
                 widthKm = widthKm,
                 gestureScale = { gestureScale },
+                onRetry = { viewModel.retry(location) },
                 onClose = state::close
             )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RadarPage(
     location: Location,
-    uiState: RadarUiState,
     scan: RadarScan?,
+    error: AppException?,
     widthKm: Double,
     gestureScale: () -> Float,
+    onRetry: () -> Unit,
     onClose: () -> Unit
 ) {
     val prefs = LocalAppPrefs.current
@@ -165,10 +176,12 @@ private fun RadarPage(
                             style = MaterialTheme.typography.titleLarge
                         )
                         if (scan != null) {
+                            // Include the date for an old scan, e.g. while the radar is down
+                            val isOld = System.currentTimeMillis() - scan.scanTimeMilli > OLD_SCAN_MILLI
                             val time = if (prefs.is24HrTimeFormat) {
-                                to24HourTimeString(scan.scanTimeMilli, location.timezone, "HH:mm")
+                                to24HourTimeString(scan.scanTimeMilli, location.timezone, if (isOld) "MMMdHHmm" else "HH:mm")
                             } else {
-                                to12HourTimeString(scan.scanTimeMilli, location.timezone, "h:mm a")
+                                to12HourTimeString(scan.scanTimeMilli, location.timezone, if (isOld) "MMMdhmma" else "h:mm a")
                             }
                             Text(
                                 "${scan.station} · $time",
@@ -178,32 +191,24 @@ private fun RadarPage(
                         }
                     }
                 },
-                navigationIcon = {
-                    IconButton(onClick = onClose, shapes = IconButtonDefaults.shapes()) {
-                        Symbol(
-                            R.drawable.arrow_back_24px,
-                            desc = "arrow back icon",
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
+                navigationIcon = { NavigateUpBtn(onClick = onClose) }
             )
         }
     ) { padding ->
         Box(
             Modifier
                 .padding(padding)
-                .fillMaxSize()
+                .fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
             when {
                 scan != null -> RadarImage(scan, location, widthKm, gestureScale)
-                uiState.isUnavailable -> Text(
-                    stringResource(R.string.radar_unavailable),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.Center)
+                error != null -> ErrorContainer(
+                    onRetry = onRetry,
+                    errorDescription = stringResource(error.toMessageRes())
                 )
 
-                else -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                else -> LoadingPlaceholder()
             }
         }
     }
@@ -258,7 +263,8 @@ private fun RadarImage(
     Box(
         Modifier
             .fillMaxSize()
-            .onSizeChanged { size = it }
+            .onSizeChanged { size = it },
+        contentAlignment = Alignment.Center
     ) {
         rendered?.let { (bitmap, renderedWidthKm) ->
             Image(
@@ -274,71 +280,36 @@ private fun RadarImage(
                         scaleY = scale
                     }
             )
-        } ?: CircularProgressIndicator(Modifier.align(Alignment.Center))
+        } ?: LoadingPlaceholder()
     }
 }
-
-private enum class GestureMode { Undecided, CloseDrag, Zoom }
 
 /**
  * One finger drags the page (it only moves right, towards closing); two fingers zoom
  */
 private fun Modifier.radarPageGestures(
+    key: Any,
     onCloseDrag: (Float) -> Unit,
     onCloseDragEnd: (Float) -> Unit,
     onZoom: (Float) -> Unit,
     onZoomEnd: () -> Unit
-): Modifier = pointerInput(Unit) {
+): Modifier = pointerInput(key) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val velocityTracker = VelocityTracker()
-        velocityTracker.addPosition(down.uptimeMillis, down.position)
-        var total = Offset.Zero
-        var mode = GestureMode.Undecided
-
-        while (true) {
-            val event = awaitPointerEvent()
-            if (event.changes.none { it.pressed }) break
-
-            if (mode != GestureMode.CloseDrag && event.changes.count { it.pressed } >= 2) {
-                mode = GestureMode.Zoom
+        var zooming = false
+        val velocity = trackHorizontalDrag(
+            down,
+            // Rightward and not too steep, so vertical swipes don't close the page
+            accept = { total -> !zooming && total.x > 0 && abs(total.y) < 2 * total.x },
+            onDrag = onCloseDrag,
+            onMultiTouch = { event ->
+                zooming = true
                 val zoom = event.calculateZoom()
                 if (zoom != 1f) onZoom(zoom)
                 event.changes.forEach { if (it.positionChange() != Offset.Zero) it.consume() }
-                continue
+                MultiTouch.Handled
             }
-
-            val change = event.changes.firstOrNull { it.id == down.id && it.pressed } ?: continue
-            when (mode) {
-                GestureMode.Undecided -> {
-                    total += change.positionChange()
-                    if (total.getDistance() > viewConfiguration.touchSlop) {
-                        mode = GestureMode.CloseDrag
-                        onCloseDrag(total.x)
-                        change.consume()
-                    }
-                }
-
-                GestureMode.CloseDrag -> {
-                    onCloseDrag(change.positionChange().x)
-                    change.consume()
-                }
-
-                else -> Unit
-            }
-            velocityTracker.addPosition(change.uptimeMillis, change.position)
-        }
-
-        when (mode) {
-            GestureMode.CloseDrag -> onCloseDragEnd(velocityTracker.calculateVelocity().x)
-            GestureMode.Zoom -> onZoomEnd()
-            else -> Unit
-        }
+        )
+        if (velocity != null) onCloseDragEnd(velocity) else if (zooming) onZoomEnd()
     }
-}
-
-private fun distanceKm(location: Location, scan: RadarScan): Double {
-    val east = (scan.longitude - location.longitude) * cos(Math.toRadians(location.latitude)) * 111.2
-    val north = (scan.latitude - location.latitude) * 111.2
-    return hypot(east, north)
 }

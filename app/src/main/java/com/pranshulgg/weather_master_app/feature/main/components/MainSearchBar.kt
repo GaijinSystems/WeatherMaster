@@ -47,8 +47,7 @@ fun MainSearchBar(
     activeLocation: Location?,
     onEditLocation: () -> Unit,
     layoutDirection: LayoutDirection,
-    showRadarButton: Boolean = false,
-    onOpenRadar: () -> Unit = {}
+    onOpenRadar: (() -> Unit)?
 ) {
     val scope = rememberCoroutineScope()
     val showDrawer = {
@@ -109,7 +108,7 @@ fun MainSearchBar(
                 overflow = TextOverflow.Ellipsis
             )
             Gap(horizontal = 4.dp)
-            if (showRadarButton) {
+            if (onOpenRadar != null) {
                 Tooltip(stringResource(R.string.radar_open), preferredPosition = TooltipAnchorPosition.Below) {
                     IconButton(onClick = onOpenRadar) {
                         Symbol(

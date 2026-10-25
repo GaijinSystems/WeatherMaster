@@ -566,8 +566,6 @@
 
     <string name="radar">Radar</string>
     <string name="radar_open">Open radar</string>
-    <string name="radar_unavailable">Radar unavailable</string>
-    <string name="radar_loading">Loading radar…</string>
 </resources>
 
     <!--<string name=""></string>-->

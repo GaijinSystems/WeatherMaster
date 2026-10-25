@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.lang.ref.SoftReference
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -24,8 +25,10 @@ class OutlineLayer(
 
 /**
  * Map outlines drawn with the radar: US states and counties (US Census Bureau 2024 cartographic
- * boundary files, 1:500k), primary and secondary roads (Census TIGER 2024, Interstate, US and State
- * routes) and rivers and lakes (Natural Earth 10m). All public domain
+ * boundary files, 1:500k), roads (Census TIGER 2024 primary and secondary roads, split into
+ * Interstate, US and State routes) and rivers and lakes (Natural Earth 10m; major = its worldwide
+ * datasets, minor = its North America supplement). All public domain. Roads and water are split
+ * so less is drawn when zoomed out
  *
  * File format (big-endian), per polyline, coordinates in units of 1e-5 degree:
  * int32 point count, int32 lat and int32 lon of the first point, then int16 dLat, int16 dLon steps
@@ -33,23 +36,31 @@ class OutlineLayer(
 class RadarOutlines(
     val states: OutlineLayer,
     val counties: OutlineLayer,
-    val roads: OutlineLayer,
-    val water: OutlineLayer
+    val interstates: OutlineLayer,
+    val usRoutes: OutlineLayer,
+    val stateRoutes: OutlineLayer,
+    val majorWater: OutlineLayer,
+    val minorWater: OutlineLayer
 ) {
 
     companion object {
         private val mutex = Mutex()
-        private var loaded: RadarOutlines? = null
+
+        // About 17 MB once loaded; soft so it can be reclaimed while the radar isn't used
+        private var loaded: SoftReference<RadarOutlines>? = null
 
         suspend fun load(context: Context): RadarOutlines = mutex.withLock {
-            loaded ?: withContext(Dispatchers.IO) {
+            loaded?.get() ?: withContext(Dispatchers.IO) {
                 RadarOutlines(
                     states = readLayer(context, R.raw.radar_states),
                     counties = readLayer(context, R.raw.radar_counties),
-                    roads = readLayer(context, R.raw.radar_roads),
-                    water = readLayer(context, R.raw.radar_water)
+                    interstates = readLayer(context, R.raw.radar_roads_interstate),
+                    usRoutes = readLayer(context, R.raw.radar_roads_us),
+                    stateRoutes = readLayer(context, R.raw.radar_roads_state),
+                    majorWater = readLayer(context, R.raw.radar_water_major),
+                    minorWater = readLayer(context, R.raw.radar_water_minor)
                 )
-            }.also { loaded = it }
+            }.also { loaded = SoftReference(it) }
         }
 
         private fun readLayer(context: Context, resourceId: Int): OutlineLayer {

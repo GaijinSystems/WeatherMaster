@@ -1,16 +1,9 @@
 package com.pranshulgg.weather_master_app.feature.main
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
-import com.pranshulgg.weather_master_app.core.model.sources.Capability
-import com.pranshulgg.weather_master_app.feature.radar.RadarPanel
-import com.pranshulgg.weather_master_app.feature.radar.radarOpenSwipe
-import com.pranshulgg.weather_master_app.feature.radar.rememberRadarPanelState
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.SheetValue
@@ -20,12 +13,18 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -39,6 +38,7 @@ import com.pranshulgg.weather_master_app.core.model.domain.toMessageRes
 import com.pranshulgg.weather_master_app.core.model.domain.weather.Weather
 import com.pranshulgg.weather_master_app.core.model.domain.weather.WeatherBlock
 import com.pranshulgg.weather_master_app.core.model.domain.weather.WeatherUnits
+import com.pranshulgg.weather_master_app.core.model.sources.Capability
 import com.pranshulgg.weather_master_app.core.prefs.LocalAppPrefs
 import com.pranshulgg.weather_master_app.core.prefs.helper.PreferencesHelper
 import com.pranshulgg.weather_master_app.core.ui.navigation.NavRoutes
@@ -48,6 +48,9 @@ import com.pranshulgg.weather_master_app.feature.locations.LocationsScreen
 import com.pranshulgg.weather_master_app.feature.main.ui.MainScreenBottomSheets
 import com.pranshulgg.weather_master_app.feature.main.ui.MainScreenDialogs
 import com.pranshulgg.weather_master_app.feature.main.ui.NavigationDrawer
+import com.pranshulgg.weather_master_app.feature.radar.RadarPanel
+import com.pranshulgg.weather_master_app.feature.radar.radarOpenSwipe
+import com.pranshulgg.weather_master_app.feature.radar.rememberRadarPanelState
 import com.pranshulgg.weather_master_app.feature.shared.WeatherViewModel
 import com.pranshulgg.weather_master_app.feature.shared.ui.SharedBottomSheet
 import kotlinx.coroutines.launch
@@ -165,11 +168,13 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
     }
 
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .onSizeChanged { radarState.widthPx = it.width.toFloat() }
-    ) {
+    // Weather animations are paused while the radar page fully covers the main screen
+    val isRadarCovering by remember { derivedStateOf { radarState.closedFraction == 0f } }
+    // In right-to-left layouts the locations drawer opens with a left swipe, so the radar only
+    // opens from its button there
+    val isLeftToRight = LocalLayoutDirection.current == LayoutDirection.Ltr
+
+    Box(Modifier.fillMaxSize()) {
         NavigationDrawer(
             drawerContent = {
                 LocationsScreen(
@@ -191,7 +196,12 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
             content = {
                 // The swipe is read on this fixed box; the main screen inside slides out to the left
                 // as the radar page slides in
-                Box(Modifier.radarOpenSwipe(radarState, enabled = isRadarAvailable && drawerState.isClosed)) {
+                Box(
+                    Modifier.radarOpenSwipe(
+                        radarState,
+                        enabled = isRadarAvailable && isLeftToRight && drawerState.isClosed
+                    )
+                ) {
                     Box(Modifier.graphicsLayer { translationX = -(1f - radarState.closedFraction) * size.width }) {
                         MainScreenScaffold(
                             navController = navController,
@@ -215,8 +225,8 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
                             onUpdateBlocks = {
                                 viewModel.saveBlocks(it)
                             },
-                            showRadarButton = isRadarAvailable,
-                            onOpenRadar = radarState::open
+                            onOpenRadar = if (isRadarAvailable) radarState::open else null,
+                            pauseAnimations = isRadarCovering
                         )
                     }
                 }

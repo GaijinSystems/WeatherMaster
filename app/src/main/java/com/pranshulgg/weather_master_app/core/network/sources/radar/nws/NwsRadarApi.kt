@@ -6,11 +6,14 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.http.GET
 import retrofit2.http.Path
+import retrofit2.http.Streaming
 import java.util.concurrent.TimeUnit
 
 interface NwsRadarApi {
 
     // Latest NEXRAD Level 3 file for a radar station (e.g. product "DS.p94r0", station "keax")
+    // Streamed so the caller can limit how much it reads
+    @Streaming
     @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/sn.last")
     suspend fun fetchLatestProduct(
         @Path("product") product: String,

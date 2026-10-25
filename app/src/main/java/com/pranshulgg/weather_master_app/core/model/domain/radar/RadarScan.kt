@@ -16,4 +16,6 @@ class RadarScan(
     val levels: ByteArray
 ) {
     val radialCount: Int get() = startAngles.size
+
+    val rangeKm: Double get() = binCount * binSizeKm
 }

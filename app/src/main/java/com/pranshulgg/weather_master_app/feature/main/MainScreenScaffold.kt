@@ -66,8 +66,8 @@ fun MainScreenScaffold(
     activeLocation: Location?,
     weatherBlocks: WeatherBlocksStoreState,
     onUpdateBlocks: (List<WeatherBlock>) -> Unit,
-    showRadarButton: Boolean = false,
-    onOpenRadar: () -> Unit = {},
+    onOpenRadar: (() -> Unit)?,
+    pauseAnimations: Boolean,
 ) {
 
 
@@ -107,7 +107,7 @@ fun MainScreenScaffold(
             if (isWeatherBasedTheme) {
                 BackgroundGradient(weather, isScrolled)
             }
-            if (isShowWeatherAnimations) {
+            if (isShowWeatherAnimations && !pauseAnimations) {
                 AnimatedVisibility(
                     visible = isAnimationVisible,
                     enter = fadeIn(),
@@ -163,7 +163,6 @@ fun MainScreenScaffold(
                             activeLocation,
                             onEditLocation,
                             layoutDirection,
-                            showRadarButton = showRadarButton,
                             onOpenRadar = onOpenRadar
                         )
                         if (weather != null) {
