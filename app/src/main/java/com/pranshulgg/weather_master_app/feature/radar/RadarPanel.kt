@@ -1,6 +1,7 @@
 package com.pranshulgg.weather_master_app.feature.radar
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -33,7 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -65,6 +66,7 @@ import kotlin.math.hypot
 import kotlin.time.Duration.Companion.minutes
 
 private const val MIN_WIDTH_KM = 25.0
+private val BORDER_WIDTH = 16.dp // left and right edges of the page
 private const val DEFAULT_WIDTH_KM = 100.0
 private val REFRESH_INTERVAL = 3.minutes
 
@@ -92,8 +94,6 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
     var gestureScale by remember { mutableFloatStateOf(1f) }
     val maxWidthKm = scan?.let { 2 * (it.binCount * it.binSizeKm + distanceKm(location, it)) } ?: 1000.0
     val currentMaxWidthKm by rememberUpdatedState(maxWidthKm)
-
-    val borderColor = MaterialTheme.colorScheme.outlineVariant
 
     // Gestures are read on this fixed layer: reading them on the sliding page would measure the
     // finger relative to a page that moves with it
@@ -124,17 +124,9 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationX = state.closedFraction * size.width }
-                .drawWithContent {
-                    drawContent()
-                    val stroke = 1.dp.toPx()
-                    drawLine(borderColor, Offset(stroke / 2, 0f), Offset(stroke / 2, size.height), stroke)
-                    drawLine(
-                        borderColor,
-                        Offset(size.width - stroke / 2, 0f),
-                        Offset(size.width - stroke / 2, size.height),
-                        stroke
-                    )
-                }
+                // Black borders on the left and right; the page fits between them
+                .background(Color.Black)
+                .padding(horizontal = BORDER_WIDTH)
         ) {
             RadarPage(
                 location = location,
