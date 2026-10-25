@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -46,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.pranshulgg.weather_master_app.R
 import com.pranshulgg.weather_master_app.core.model.domain.location.Location
@@ -91,10 +93,13 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
     val maxWidthKm = scan?.let { 2 * (it.binCount * it.binSizeKm + distanceKm(location, it)) } ?: 1000.0
     val currentMaxWidthKm by rememberUpdatedState(maxWidthKm)
 
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
+
+    // Gestures are read on this fixed layer: reading them on the sliding page would measure the
+    // finger relative to a page that moves with it
     Box(
         Modifier
             .fillMaxSize()
-            .graphicsLayer { translationX = state.closedFraction * size.width }
             .pointerInput(Unit) {
                 detectTapGestures(onDoubleTap = {
                     val presets = listOf(MIN_WIDTH_KM, DEFAULT_WIDTH_KM, currentMaxWidthKm)
@@ -104,7 +109,7 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
             }
             .radarPageGestures(
                 onCloseDrag = state::dragBy,
-                onCloseDragEnd = state::settle,
+                onCloseDragEnd = { velocity -> state.settle(velocity, opening = false) },
                 onZoom = { zoom ->
                     gestureScale = (gestureScale * zoom)
                         .coerceIn((widthKm / currentMaxWidthKm).toFloat(), (widthKm / MIN_WIDTH_KM).toFloat())
@@ -115,14 +120,31 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
                 }
             )
     ) {
-        RadarPage(
-            location = location,
-            uiState = uiState,
-            scan = scan,
-            widthKm = widthKm,
-            gestureScale = { gestureScale },
-            onClose = state::close
-        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationX = state.closedFraction * size.width }
+                .drawWithContent {
+                    drawContent()
+                    val stroke = 1.dp.toPx()
+                    drawLine(borderColor, Offset(stroke / 2, 0f), Offset(stroke / 2, size.height), stroke)
+                    drawLine(
+                        borderColor,
+                        Offset(size.width - stroke / 2, 0f),
+                        Offset(size.width - stroke / 2, size.height),
+                        stroke
+                    )
+                }
+        ) {
+            RadarPage(
+                location = location,
+                uiState = uiState,
+                scan = scan,
+                widthKm = widthKm,
+                gestureScale = { gestureScale },
+                onClose = state::close
+            )
+        }
     }
 }
 
@@ -209,6 +231,8 @@ private fun RadarImage(
         RadarColors(
             states = colorScheme.onSurfaceVariant.copy(alpha = 0.8f).toArgb(),
             counties = colorScheme.outlineVariant.copy(alpha = 0.6f).toArgb(),
+            roads = colorScheme.tertiary.copy(alpha = 0.45f).toArgb(),
+            water = colorScheme.primary.copy(alpha = 0.55f).toArgb(),
             location = colorScheme.primary.toArgb(),
             locationRing = colorScheme.surface.toArgb(),
             site = colorScheme.onSurface.toArgb(),
@@ -262,10 +286,10 @@ private fun RadarImage(
     }
 }
 
-private enum class GestureMode { Undecided, CloseDrag, Zoom, Ignored }
+private enum class GestureMode { Undecided, CloseDrag, Zoom }
 
 /**
- * One finger dragging right closes the page (left does nothing); two fingers zoom
+ * One finger drags the page (it only moves right, towards closing); two fingers zoom
  */
 private fun Modifier.radarPageGestures(
     onCloseDrag: (Float) -> Unit,
@@ -297,13 +321,9 @@ private fun Modifier.radarPageGestures(
                 GestureMode.Undecided -> {
                     total += change.positionChange()
                     if (total.getDistance() > viewConfiguration.touchSlop) {
-                        if (total.x > 0 && abs(total.x) > abs(total.y)) {
-                            mode = GestureMode.CloseDrag
-                            onCloseDrag(total.x)
-                            change.consume()
-                        } else {
-                            mode = GestureMode.Ignored
-                        }
+                        mode = GestureMode.CloseDrag
+                        onCloseDrag(total.x)
+                        change.consume()
                     }
                 }
 

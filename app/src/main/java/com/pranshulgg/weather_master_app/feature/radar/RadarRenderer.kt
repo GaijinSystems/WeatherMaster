@@ -15,6 +15,8 @@ import kotlin.math.sin
 class RadarColors(
     val states: Int,
     val counties: Int,
+    val roads: Int,
+    val water: Int,
     val location: Int,
     val locationRing: Int,
     val site: Int,
@@ -52,9 +54,19 @@ object RadarRenderer {
         val siteX = toX(scan.longitude)
         val siteY = toY(scan.latitude)
 
+        // Visible area in degrees, for skipping polylines that can't be on screen
+        val view = floatArrayOf(
+            (centerLatitude - heightPx / 2.0 / pxPerKm / KM_PER_DEGREE).toFloat(),
+            (centerLongitude - widthPx / 2.0 / pxPerKm / lonKmScale).toFloat(),
+            (centerLatitude + heightPx / 2.0 / pxPerKm / KM_PER_DEGREE).toFloat(),
+            (centerLongitude + widthPx / 2.0 / pxPerKm / lonKmScale).toFloat()
+        )
+
         drawScan(canvas, scan, siteX, siteY, pxPerKm, widthPx, heightPx)
-        drawSegments(canvas, outlines.counties, toX, toY, widthPx, heightPx, colors.counties, 0.6f * density)
-        drawSegments(canvas, outlines.states, toX, toY, widthPx, heightPx, colors.states, 1.2f * density)
+        drawLayer(canvas, outlines.water, view, toX, toY, colors.water, 0.8f * density)
+        drawLayer(canvas, outlines.counties, view, toX, toY, colors.counties, 0.6f * density)
+        drawLayer(canvas, outlines.roads, view, toX, toY, colors.roads, 0.8f * density)
+        drawLayer(canvas, outlines.states, view, toX, toY, colors.states, 1.2f * density)
         drawSite(canvas, scan.station, siteX, siteY, density, colors)
         drawLocation(canvas, widthPx / 2f, heightPx / 2f, density, colors)
 
@@ -120,32 +132,31 @@ object RadarRenderer {
         }
     }
 
-    private fun drawSegments(
+    private fun drawLayer(
         canvas: Canvas,
-        segments: FloatArray,
+        layer: OutlineLayer,
+        view: FloatArray,
         toX: (Double) -> Float,
         toY: (Double) -> Float,
-        widthPx: Int,
-        heightPx: Int,
         color: Int,
         strokeWidth: Float
     ) {
         val path = Path()
-        var i = 0
-        while (i + 3 < segments.size) {
-            val x1 = toX(-segments[i + 1].toDouble())
-            val y1 = toY(segments[i].toDouble())
-            val x2 = toX(-segments[i + 3].toDouble())
-            val y2 = toY(segments[i + 2].toDouble())
-            i += 4
-            if ((x1 < 0 && x2 < 0) || (x1 > widthPx && x2 > widthPx) ||
-                (y1 < 0 && y2 < 0) || (y1 > heightPx && y2 > heightPx)
+        val bounds = layer.bounds
+        for (line in 0 until layer.polylineCount) {
+            val b = line * 4
+            if (bounds[b + 2] < view[0] || bounds[b] > view[2] ||
+                bounds[b + 3] < view[1] || bounds[b + 1] > view[3]
             ) continue
-            path.moveTo(x1, y1)
-            path.lineTo(x2, y2)
+            val first = layer.starts[line]
+            path.moveTo(toX(layer.longitudes[first].toDouble()), toY(layer.latitudes[first].toDouble()))
+            for (point in first + 1 until layer.starts[line + 1]) {
+                path.lineTo(toX(layer.longitudes[point].toDouble()), toY(layer.latitudes[point].toDouble()))
+            }
         }
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
             this.color = color
             this.strokeWidth = strokeWidth
         }

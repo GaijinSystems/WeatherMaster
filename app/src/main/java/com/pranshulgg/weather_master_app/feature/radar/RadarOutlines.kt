@@ -10,12 +10,32 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * US state and county outlines drawn under the radar
- *
- * Data from wX (https://gitlab.com/joshua.tee/wx, GPL-3.0), res/raw/statev2 and res/raw/county:
- * big-endian floats, 4 per line segment (lat1, lon1, lat2, lon2) with longitudes positive west
+ * One outline layer as polylines. Points of polyline i are [starts][i] until [starts][i + 1];
+ * [bounds] holds minLat, minLon, maxLat, maxLon per polyline
  */
-class RadarOutlines(val states: FloatArray, val counties: FloatArray) {
+class OutlineLayer(
+    val starts: IntArray,
+    val latitudes: FloatArray,
+    val longitudes: FloatArray,
+    val bounds: FloatArray
+) {
+    val polylineCount: Int get() = starts.size - 1
+}
+
+/**
+ * Map outlines drawn with the radar: US states and counties (US Census Bureau 2024 cartographic
+ * boundary files, 1:500k), primary and secondary roads (Census TIGER 2024, Interstate, US and State
+ * routes) and rivers and lakes (Natural Earth 10m). All public domain
+ *
+ * File format (big-endian), per polyline, coordinates in units of 1e-5 degree:
+ * int32 point count, int32 lat and int32 lon of the first point, then int16 dLat, int16 dLon steps
+ */
+class RadarOutlines(
+    val states: OutlineLayer,
+    val counties: OutlineLayer,
+    val roads: OutlineLayer,
+    val water: OutlineLayer
+) {
 
     companion object {
         private val mutex = Mutex()
@@ -24,16 +44,64 @@ class RadarOutlines(val states: FloatArray, val counties: FloatArray) {
         suspend fun load(context: Context): RadarOutlines = mutex.withLock {
             loaded ?: withContext(Dispatchers.IO) {
                 RadarOutlines(
-                    states = readSegments(context, R.raw.radar_states),
-                    counties = readSegments(context, R.raw.radar_counties)
+                    states = readLayer(context, R.raw.radar_states),
+                    counties = readLayer(context, R.raw.radar_counties),
+                    roads = readLayer(context, R.raw.radar_roads),
+                    water = readLayer(context, R.raw.radar_water)
                 )
             }.also { loaded = it }
         }
 
-        private fun readSegments(context: Context, resourceId: Int): FloatArray {
+        private fun readLayer(context: Context, resourceId: Int): OutlineLayer {
             val bytes = context.resources.openRawResource(resourceId).use { it.readBytes() }
-            val floats = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asFloatBuffer()
-            return FloatArray(floats.remaining()).also { floats.get(it) }
+            val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+
+            // First pass: count polylines and points to size the arrays
+            var polylines = 0
+            var points = 0
+            while (buffer.remaining() >= 12) {
+                val count = buffer.int
+                buffer.position(buffer.position() + 8 + (count - 1) * 4)
+                polylines++
+                points += count
+            }
+            buffer.rewind()
+
+            val starts = IntArray(polylines + 1)
+            val latitudes = FloatArray(points)
+            val longitudes = FloatArray(points)
+            val bounds = FloatArray(polylines * 4)
+            var point = 0
+
+            for (line in 0 until polylines) {
+                val count = buffer.int
+                var lat = buffer.int
+                var lon = buffer.int
+                starts[line] = point
+                var minLat = lat
+                var maxLat = lat
+                var minLon = lon
+                var maxLon = lon
+                latitudes[point] = lat / 1e5f
+                longitudes[point] = lon / 1e5f
+                point++
+                repeat(count - 1) {
+                    lat += buffer.short
+                    lon += buffer.short
+                    if (lat < minLat) minLat = lat else if (lat > maxLat) maxLat = lat
+                    if (lon < minLon) minLon = lon else if (lon > maxLon) maxLon = lon
+                    latitudes[point] = lat / 1e5f
+                    longitudes[point] = lon / 1e5f
+                    point++
+                }
+                bounds[line * 4] = minLat / 1e5f
+                bounds[line * 4 + 1] = minLon / 1e5f
+                bounds[line * 4 + 2] = maxLat / 1e5f
+                bounds[line * 4 + 3] = maxLon / 1e5f
+            }
+            starts[polylines] = point
+
+            return OutlineLayer(starts, latitudes, longitudes, bounds)
         }
     }
 }

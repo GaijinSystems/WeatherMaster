@@ -3,6 +3,7 @@ package com.pranshulgg.weather_master_app.feature.main
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import com.pranshulgg.weather_master_app.core.model.sources.Capability
 import com.pranshulgg.weather_master_app.feature.radar.RadarPanel
@@ -188,32 +189,36 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
             },
             drawerState = drawerState,
             content = {
+                // The swipe is read on this fixed box; the main screen inside slides out to the left
+                // as the radar page slides in
                 Box(Modifier.radarOpenSwipe(radarState, enabled = isRadarAvailable && drawerState.isClosed)) {
-                    MainScreenScaffold(
-                        navController = navController,
-                        drawerState = drawerState,
-                        weatherStore = weatherStore,
-                        onRefresh = {
-                            weatherViewModel.setActiveLoading()
-                            weatherViewModel.refreshWeather(activeLocation)
-                        },
-                        onEditLocation = {
-                            navController.navigate(NavRoutes.EDIT_LOCATION)
-                        },
-                        context = context,
-                        onWeatherSourceInfoClick = viewModel::showWeatherSourcesInfoForLocationSheet,
-                        isTabletLike = isTabletLike,
-                        prefs = prefs,
-                        units = unitsStore,
-                        isLoading = locationStore.isActiveLocationLoading,
-                        activeLocation = locationStore.activeLocation,
-                        weatherBlocks = weatherBlocks,
-                        onUpdateBlocks = {
-                            viewModel.saveBlocks(it)
-                        },
-                        showRadarButton = isRadarAvailable,
-                        onOpenRadar = radarState::open
-                    )
+                    Box(Modifier.graphicsLayer { translationX = -(1f - radarState.closedFraction) * size.width }) {
+                        MainScreenScaffold(
+                            navController = navController,
+                            drawerState = drawerState,
+                            weatherStore = weatherStore,
+                            onRefresh = {
+                                weatherViewModel.setActiveLoading()
+                                weatherViewModel.refreshWeather(activeLocation)
+                            },
+                            onEditLocation = {
+                                navController.navigate(NavRoutes.EDIT_LOCATION)
+                            },
+                            context = context,
+                            onWeatherSourceInfoClick = viewModel::showWeatherSourcesInfoForLocationSheet,
+                            isTabletLike = isTabletLike,
+                            prefs = prefs,
+                            units = unitsStore,
+                            isLoading = locationStore.isActiveLocationLoading,
+                            activeLocation = locationStore.activeLocation,
+                            weatherBlocks = weatherBlocks,
+                            onUpdateBlocks = {
+                                viewModel.saveBlocks(it)
+                            },
+                            showRadarButton = isRadarAvailable,
+                            onOpenRadar = radarState::open
+                        )
+                    }
                 }
             }
         )

@@ -56,12 +56,16 @@ class RadarPanelState(private val scope: CoroutineScope) {
         closedFraction = (closedFraction + deltaPx / widthPx).coerceIn(0f, 1f)
     }
 
-    fun settle(velocityPxPerSecond: Float) {
+    /**
+     * Finishes a drag: a flick decides, otherwise moving the panel [SETTLE_DISTANCE] of the way
+     * in the drag's direction ([opening] or closing) is enough
+     */
+    fun settle(velocityPxPerSecond: Float, opening: Boolean) {
         val target = when {
             velocityPxPerSecond < -FLING_VELOCITY -> 0f
             velocityPxPerSecond > FLING_VELOCITY -> 1f
-            closedFraction < 0.5f -> 0f
-            else -> 1f
+            opening -> if (closedFraction < 1f - SETTLE_DISTANCE) 0f else 1f
+            else -> if (closedFraction > SETTLE_DISTANCE) 1f else 0f
         }
         animateTo(target, velocityPxPerSecond / widthPx)
     }
@@ -77,7 +81,8 @@ class RadarPanelState(private val scope: CoroutineScope) {
     }
 
     private companion object {
-        const val FLING_VELOCITY = 1000f
+        const val FLING_VELOCITY = 500f
+        const val SETTLE_DISTANCE = 0.3f
     }
 }
 
@@ -121,6 +126,6 @@ fun Modifier.radarOpenSwipe(state: RadarPanelState, enabled: Boolean): Modifier 
                 velocityTracker.addPosition(change.uptimeMillis, change.position)
             }
 
-            if (dragging) state.settle(velocityTracker.calculateVelocity().x)
+            if (dragging) state.settle(velocityTracker.calculateVelocity().x, opening = true)
         }
     }
