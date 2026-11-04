@@ -8,7 +8,13 @@ class RadarScan(
     val station: String,
     val latitude: Double,
     val longitude: Double,
+    /** Start of the volume scan, shown to the user */
     val scanTimeMilli: Long,
+    /**
+     * When the file was generated: identifies the scan. Under SAILS a volume has several low-level
+     * sweeps, each its own file with the same [scanTimeMilli]
+     */
+    val productTimeMilli: Long,
     val binCount: Int,
     val binSizeKm: Double,
     val startAngles: FloatArray,

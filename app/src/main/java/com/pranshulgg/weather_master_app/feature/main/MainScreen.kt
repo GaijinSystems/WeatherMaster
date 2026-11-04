@@ -49,6 +49,7 @@ import com.pranshulgg.weather_master_app.feature.main.ui.MainScreenBottomSheets
 import com.pranshulgg.weather_master_app.feature.main.ui.MainScreenDialogs
 import com.pranshulgg.weather_master_app.feature.main.ui.NavigationDrawer
 import com.pranshulgg.weather_master_app.feature.radar.RadarPanel
+import com.pranshulgg.weather_master_app.feature.radar.RadarViewModel
 import com.pranshulgg.weather_master_app.feature.radar.radarOpenSwipe
 import com.pranshulgg.weather_master_app.feature.radar.rememberRadarPanelState
 import com.pranshulgg.weather_master_app.feature.shared.WeatherViewModel
@@ -137,6 +138,13 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
     LaunchedEffect(isRadarAvailable) {
         if (!isRadarAvailable) radarState.snapClosed()
     }
+
+    // Created with the main screen, not when the radar opens: it fetches the radar alongside the weather
+    val radarViewModel: RadarViewModel = hiltViewModel()
+    // The time lapse plays until stopped or the page closes (also when the radar isn't available,
+    // so RadarPanel isn't shown). Rotating closes the page too: its open state isn't saved
+    val isRadarVisible by remember { derivedStateOf { radarState.isVisible } }
+    LaunchedEffect(isRadarVisible) { if (!isRadarVisible) radarViewModel.stopLoop(keepScans = false) }
 
     LaunchedEffect(weatherViewModel.isUnSupportedSource) {
         if (weatherViewModel.isUnSupportedSource) {

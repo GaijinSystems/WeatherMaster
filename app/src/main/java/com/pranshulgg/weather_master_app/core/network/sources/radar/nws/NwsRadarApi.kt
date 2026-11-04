@@ -20,6 +20,22 @@ interface NwsRadarApi {
         @Path("station") station: String
     ): Response<ResponseBody>
 
+    // Folder listing (HTML) of a station's recent files: sn.0000..sn.0250 written in rotation
+    @Streaming
+    @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/")
+    suspend fun fetchProductListing(
+        @Path("product") product: String,
+        @Path("station") station: String
+    ): Response<ResponseBody>
+
+    @Streaming
+    @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/{file}")
+    suspend fun fetchProduct(
+        @Path("product") product: String,
+        @Path("station") station: String,
+        @Path("file") file: String
+    ): Response<ResponseBody>
+
     companion object {
         const val BASE_URL = "https://tgftp.nws.noaa.gov/"
 
@@ -28,6 +44,7 @@ interface NwsRadarApi {
             val client = OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(60, TimeUnit.SECONDS)
                 .build()
 
             return Retrofit.Builder()

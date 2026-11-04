@@ -20,6 +20,7 @@ import com.pranshulgg.weather_master_app.data.store.WeatherStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +57,17 @@ class WeatherManager @Inject constructor(
         private set
 
     val errors = _errors.asSharedFlow()
+
+    private val _requests = MutableSharedFlow<Location>(
+        replay = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    /**
+     * The location of each weather request (set, refreshed or auto refreshed), once the device
+     * location is resolved, for data fetched alongside the weather. Replays the latest one
+     */
+    val requests = _requests.asSharedFlow()
 
     private var weatherJob: Job? = null
 
@@ -94,6 +106,8 @@ class WeatherManager @Inject constructor(
                     }
                 }
 
+
+                _requests.tryEmit(effectiveLocation)
 
                 sourceDataRepository.getData(
                     location = effectiveLocation,

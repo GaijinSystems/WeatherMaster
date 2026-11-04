@@ -47,6 +47,7 @@ object NexradLevel3Decoder {
 
         val latitude = header.int / 1000.0
         val longitude = header.int / 1000.0
+        ensureValid(latitude in -90.0..90.0 && longitude in -180.0..180.0)
         header.short // radar height
         val productCode = header.short.toInt() and 0xFFFF
         header.short // operational mode
@@ -55,6 +56,8 @@ object NexradLevel3Decoder {
         header.short // volume scan number
         val scanDate = header.short.toInt() and 0xFFFF // days since 1970-01-01, starting at 1
         val scanTimeSeconds = header.int // seconds since midnight UTC
+        val productDate = header.short.toInt() and 0xFFFF // when this file was generated
+        val productTimeSeconds = header.int
 
         val compression = header.getShort(descriptionStart + 80).toInt() // halfword 51
         ensureValid(productCode == PRODUCT_BASE_REFLECTIVITY && compression == COMPRESSION_BZIP2)
@@ -95,6 +98,7 @@ object NexradLevel3Decoder {
                 latitude = latitude,
                 longitude = longitude,
                 scanTimeMilli = ((scanDate - 1) * SECONDS_PER_DAY + scanTimeSeconds) * 1000,
+                productTimeMilli = ((productDate - 1) * SECONDS_PER_DAY + productTimeSeconds) * 1000,
                 binCount = binCount,
                 binSizeKm = BIN_SIZE_KM,
                 startAngles = startAngles,

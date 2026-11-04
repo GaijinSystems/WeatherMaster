@@ -8,13 +8,24 @@ import com.pranshulgg.weather_master_app.core.network.calls.safeApiCall
 import com.pranshulgg.weather_master_app.core.network.sources.weather.nws.NwsApi
 import com.pranshulgg.weather_master_app.data.repository.radar.RadarRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
+import retrofit2.Response
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration
 
 @Singleton
 class NwsRadarRepository @Inject constructor(
@@ -30,10 +41,68 @@ class NwsRadarRepository @Inject constructor(
 
     override suspend fun getLatestScan(location: Location): RadarScan {
         val station = getRadarStation(location)
-
-        val body = safeApiCall {
+        return downloadScan(station) {
             radarApi.fetchLatestProduct(BASE_REFLECTIVITY, station.lowercase(Locale.US))
-        }.getOrThrow()
+        }
+    }
+
+    /**
+     * Picks files by their listed times relative to the newest one (so the listing's time zone
+     * doesn't matter), downloads them a few at a time and keeps those within [period] of the newest
+     * scan. A file that fails is skipped
+     */
+    override suspend fun getRecentScans(location: Location, period: Duration): List<RadarScan> {
+        val station = getRadarStation(location)
+        val stationPath = station.lowercase(Locale.US)
+
+        val listing = safeApiCall {
+            radarApi.fetchProductListing(BASE_REFLECTIVITY, stationPath)
+        }.getOrThrow().use {
+            withContext(Dispatchers.IO) {
+                // ~30 KB; refuse anything far larger
+                it.byteStream().readNBytesCompat(MAX_LISTING_BYTES + 1)
+                    .also { data -> if (data.size > MAX_LISTING_BYTES) throw AppException.Server() }
+                    .toString(Charsets.UTF_8)
+            }
+        }
+
+        val files = LISTING_ROW.findAll(listing).mapNotNull { row ->
+            val time = row.groupValues[2]
+            LISTING_TIMES.firstNotNullOfOrNull { format -> runCatching { LocalDateTime.parse(time, format) }.getOrNull() }
+                ?.let { row.groupValues[1] to it }
+        }.toList()
+        val newest = files.maxOfOrNull { it.second } ?: throw AppException.Server()
+        val since = newest.minusMinutes(period.inWholeMinutes + 1)
+        val wanted = files.filter { it.second >= since }.sortedBy { it.second }.takeLast(MAX_RECENT_SCANS)
+
+        val downloads = Semaphore(PARALLEL_DOWNLOADS)
+        var firstFailure: Exception? = null
+        val scans = coroutineScope {
+            wanted.map { (file, _) ->
+                async {
+                    downloads.withPermit {
+                        try {
+                            downloadScan(station) { radarApi.fetchProduct(BASE_REFLECTIVITY, stationPath, file) }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            if (firstFailure == null) firstFailure = e
+                            null
+                        }
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+        // None downloaded: report why (e.g. the network dropped), not a server error
+        val newestScan = scans.maxOfOrNull { it.productTimeMilli } ?: throw (firstFailure ?: AppException.Server())
+        return scans
+            .filter { it.productTimeMilli >= newestScan - period.inWholeMilliseconds }
+            .distinctBy { it.productTimeMilli }
+            .sortedBy { it.productTimeMilli }
+    }
+
+    private suspend fun downloadScan(station: String, request: suspend () -> Response<ResponseBody>): RadarScan {
+        val body = safeApiCall { request() }.getOrThrow()
 
         val bytes = body.use {
             withContext(Dispatchers.IO) {
@@ -56,7 +125,8 @@ class NwsRadarRepository @Inject constructor(
             api.fetchGridPoints(location.latitude, location.longitude)
         }.getOrThrow()
 
-        val station = gridPoint.points.radarStation?.takeIf { it.isNotBlank() }
+        // Used in file paths: only a station id, e.g. "KEAX"
+        val station = gridPoint.points.radarStation?.takeIf { it.matches(STATION_ID) }
             ?: throw AppException.NotFound()
 
         stations[key] = station
@@ -77,5 +147,21 @@ class NwsRadarRepository @Inject constructor(
     companion object {
         private const val BASE_REFLECTIVITY = "DS.p94r0" // N0Q
         private const val MAX_PRODUCT_BYTES = 2 * 1024 * 1024
+        private const val MAX_LISTING_BYTES = 256 * 1024
+        private const val MAX_RECENT_SCANS = 40 // an hour even with SAILS sweeps every ~1.5 min
+        private const val PARALLEL_DOWNLOADS = 4
+
+        private val STATION_ID = Regex("[A-Z]{4}")
+
+        // e.g. <a href="sn.0100">sn.0100</a></td><td align="right">03-Nov-2026 20:19  </td>, or
+        // the same without the table, or with the ISO date Apache uses by default
+        private val LISTING_ROW = Regex(
+            """href="(sn\.\d{4})">[^<]*</a>(?:\s*</td>\s*<td[^>]*>)?\s*""" +
+                    """(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}|\d{4}-\d{2}-\d{2} \d{2}:\d{2})"""
+        )
+        private val LISTING_TIMES = listOf(
+            DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm", Locale.ENGLISH),
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ENGLISH)
+        )
     }
 }

@@ -60,13 +60,38 @@ private class Projection(centerLat: Double, centerLon: Double, pxPerKm: Double, 
 }
 
 /**
- * Draws a radar scan, map outlines and markers to a bitmap centred on a location, [widthKm]
- * across. Uses a local flat projection around the centre, which is accurate enough at radar range
+ * Draws radar echoes and the map (outlines and markers) to separate bitmaps centred on a
+ * location, [widthKm] across. Uses a local flat projection around the centre, which is accurate enough at radar range
  */
 object RadarRenderer {
 
-    suspend fun render(
+    /**
+     * Radar echoes only, on a transparent bitmap. [scale] below 1 draws at lower resolution (for
+     * loop frames); the bitmap is then shown enlarged by 1 / [scale]
+     */
+    fun renderEchoes(
         scan: RadarScan,
+        centerLatitude: Double,
+        centerLongitude: Double,
+        widthKm: Double,
+        widthPx: Int,
+        heightPx: Int,
+        scale: Float = 1f
+    ): Bitmap {
+        val width = (widthPx * scale).toInt().coerceAtLeast(1)
+        val height = (heightPx * scale).toInt().coerceAtLeast(1)
+        val bitmap = createBitmap(width, height)
+        val pxPerKm = width / widthKm
+        drawScan(Canvas(bitmap), scan, Projection(centerLatitude, centerLongitude, pxPerKm, width, height), pxPerKm)
+        return bitmap
+    }
+
+    /**
+     * Map outlines, the radar site and the location marker on a transparent bitmap, drawn over the
+     * echoes. Shared by every loop frame
+     */
+    suspend fun renderMap(
+        site: RadarScan,
         outlines: RadarOutlines,
         centerLatitude: Double,
         centerLongitude: Double,
@@ -78,17 +103,13 @@ object RadarRenderer {
     ): Bitmap {
         val bitmap = createBitmap(widthPx, heightPx)
         val canvas = Canvas(bitmap)
-        val pxPerKm = widthPx / widthKm
-        val projection = Projection(centerLatitude, centerLongitude, pxPerKm, widthPx, heightPx)
-        val siteX = projection.x(scan.longitude.toFloat())
-        val siteY = projection.y(scan.latitude.toFloat())
+        val projection = Projection(centerLatitude, centerLongitude, widthPx / widthKm, widthPx, heightPx)
         val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeJoin = Paint.Join.ROUND
         }
         val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        drawScan(canvas, scan, projection, siteX, siteY, pxPerKm, widthPx, heightPx)
         val layers = buildList {
             add(Triple(outlines.majorWater, colors.water, 0.8f))
             when {
@@ -106,7 +127,7 @@ object RadarRenderer {
                 // Wider: no counties, Interstates only
             }
             add(Triple(outlines.interstates, colors.roads, 0.8f))
-            add(Triple(outlines.states, colors.states, 1.2f))
+            add(Triple(outlines.states, colors.states, 2f))
         }
         for ((layer, color, widthDp) in layers) {
             currentCoroutineContext().ensureActive() // stop early if a newer render replaced this one
@@ -114,7 +135,9 @@ object RadarRenderer {
             linePaint.strokeWidth = widthDp * density
             drawLayer(canvas, layer, projection, linePaint)
         }
-        drawSite(canvas, scan.station, siteX, siteY, density, colors, markerPaint)
+        val siteX = projection.x(site.longitude.toFloat())
+        val siteY = projection.y(site.latitude.toFloat())
+        drawSite(canvas, site.station, siteX, siteY, density, colors, markerPaint)
         drawLocation(canvas, widthPx / 2f, heightPx / 2f, density, colors, markerPaint)
 
         return bitmap
@@ -132,12 +155,12 @@ object RadarRenderer {
         canvas: Canvas,
         scan: RadarScan,
         projection: Projection,
-        siteX: Float,
-        siteY: Float,
-        pxPerKm: Double,
-        widthPx: Int,
-        heightPx: Int
+        pxPerKm: Double
     ) {
+        val widthPx = canvas.width
+        val heightPx = canvas.height
+        val siteX = projection.x(scan.longitude.toFloat())
+        val siteY = projection.y(scan.latitude.toFloat())
         // Only bins whose range can be on screen
         val viewRadiusPx = hypot(widthPx / 2.0, heightPx / 2.0)
         val siteDistancePx = hypot(siteX - widthPx / 2.0, siteY - heightPx / 2.0)
