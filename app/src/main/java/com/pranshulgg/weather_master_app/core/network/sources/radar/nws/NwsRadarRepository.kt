@@ -3,7 +3,6 @@ package com.pranshulgg.weather_master_app.core.network.sources.radar.nws
 import com.pranshulgg.weather_master_app.core.model.domain.AppException
 import com.pranshulgg.weather_master_app.core.model.domain.location.Location
 import com.pranshulgg.weather_master_app.core.model.domain.radar.RadarScan
-import com.pranshulgg.weather_master_app.core.model.sources.Source
 import com.pranshulgg.weather_master_app.core.network.calls.safeApiCall
 import com.pranshulgg.weather_master_app.core.network.sources.weather.nws.NwsApi
 import com.pranshulgg.weather_master_app.data.repository.radar.RadarRepository
@@ -17,7 +16,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
 import retrofit2.Response
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -33,8 +31,6 @@ class NwsRadarRepository @Inject constructor(
     private val radarApi: NwsRadarApi
 ) : RadarRepository {
 
-    override val radarSource = Source.NWS
-
     // Radar station (e.g. "KEAX") per position rounded to ~1 km, not per location id: the device
     // location keeps its id when it moves
     private val stations = ConcurrentHashMap<String, String>()
@@ -42,7 +38,7 @@ class NwsRadarRepository @Inject constructor(
     override suspend fun getLatestScan(location: Location): RadarScan {
         val station = getRadarStation(location)
         return downloadScan(station) {
-            radarApi.fetchLatestProduct(BASE_REFLECTIVITY, station.lowercase(Locale.US))
+            radarApi.fetchProduct(BASE_REFLECTIVITY, station.lowercase(Locale.US), LATEST_FILE)
         }
     }
 
@@ -58,12 +54,7 @@ class NwsRadarRepository @Inject constructor(
         val listing = safeApiCall {
             radarApi.fetchProductListing(BASE_REFLECTIVITY, stationPath)
         }.getOrThrow().use {
-            withContext(Dispatchers.IO) {
-                // ~30 KB; refuse anything far larger
-                it.byteStream().readNBytesCompat(MAX_LISTING_BYTES + 1)
-                    .also { data -> if (data.size > MAX_LISTING_BYTES) throw AppException.Server() }
-                    .toString(Charsets.UTF_8)
-            }
+            it.readAtMost(MAX_LISTING_BYTES).toString(Charsets.UTF_8) // ~30 KB
         }
 
         val files = LISTING_ROW.findAll(listing).mapNotNull { row ->
@@ -104,13 +95,7 @@ class NwsRadarRepository @Inject constructor(
     private suspend fun downloadScan(station: String, request: suspend () -> Response<ResponseBody>): RadarScan {
         val body = safeApiCall { request() }.getOrThrow()
 
-        val bytes = body.use {
-            withContext(Dispatchers.IO) {
-                // N0Q files are ~40 KB; refuse anything far larger
-                it.byteStream().readNBytesCompat(MAX_PRODUCT_BYTES + 1)
-                    .also { data -> if (data.size > MAX_PRODUCT_BYTES) throw AppException.Server() }
-            }
-        }
+        val bytes = body.use { it.readAtMost(MAX_PRODUCT_BYTES) } // N0Q files are ~40 KB
 
         return withContext(Dispatchers.Default) {
             NexradLevel3Decoder.decode(bytes, station)
@@ -133,19 +118,23 @@ class NwsRadarRepository @Inject constructor(
         return station
     }
 
-    private fun InputStream.readNBytesCompat(limit: Int): ByteArray {
+    /** Reads the body, refusing one larger than [limit] bytes (far larger than expected) */
+    private suspend fun ResponseBody.readAtMost(limit: Int): ByteArray = withContext(Dispatchers.IO) {
+        val input = byteStream()
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(8192)
-        while (out.size() < limit) {
-            val read = read(buffer, 0, minOf(buffer.size, limit - out.size()))
+        while (out.size() <= limit) {
+            val read = input.read(buffer, 0, minOf(buffer.size, limit + 1 - out.size()))
             if (read < 0) break
             out.write(buffer, 0, read)
         }
-        return out.toByteArray()
+        if (out.size() > limit) throw AppException.Server()
+        out.toByteArray()
     }
 
     companion object {
         private const val BASE_REFLECTIVITY = "DS.p94r0" // N0Q
+        private const val LATEST_FILE = "sn.last"
         private const val MAX_PRODUCT_BYTES = 2 * 1024 * 1024
         private const val MAX_LISTING_BYTES = 256 * 1024
         private const val MAX_RECENT_SCANS = 40 // an hour even with SAILS sweeps every ~1.5 min

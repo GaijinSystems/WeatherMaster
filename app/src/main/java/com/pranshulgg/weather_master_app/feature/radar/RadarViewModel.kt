@@ -41,6 +41,8 @@ data class RadarUiState(
 /** Identifies a location and its position: the device location keeps its id when it moves */
 val Location.radarKey: String get() = "$id@$latitude,$longitude"
 
+val Location.hasRadar: Boolean get() = Capability.RADAR in source.capabilities
+
 @HiltViewModel
 class RadarViewModel @Inject constructor(
     private val repository: RadarRepository,
@@ -58,7 +60,7 @@ class RadarViewModel @Inject constructor(
         // Fetch the radar together with the weather, whether or not the radar page is open: when a
         // location is set and whenever its weather is refreshed (manually, automatically, new source)
         weatherManager.requests
-            .onEach { location -> if (Capability.RADAR in location.source.capabilities) refreshNow(location) }
+            .onEach { location -> if (location.hasRadar) refreshNow(location) }
             .launchIn(viewModelScope)
     }
 
@@ -94,8 +96,8 @@ class RadarViewModel @Inject constructor(
     fun refreshNow(location: Location) {
         selectLocation(location)
         val recent = lastFetchMilli != 0L && millisSince(lastFetchMilli) < MIN_REFETCH_GAP.inWholeMilliseconds
-        if (recent && uiState.error == null) return
-        if (fetchJob?.isActive == true && uiState.error == null) return // one is already on its way
+        // (or one is already on its way)
+        if (uiState.error == null && (recent || fetchJob?.isActive == true)) return
         startFetch(location)
     }
 
@@ -155,26 +157,25 @@ class RadarViewModel @Inject constructor(
     }
 
     private suspend fun fetch(location: Location) {
-        val result = try {
-            Result.success(repository.getLatestScan(location))
+        val scan = try {
+            repository.getLatestScan(location)
         } catch (e: Exception) {
-            Result.failure(e.toAppException())
+            val error = e.toAppException()
+            // Drop results for a location that is no longer shown; keep showing the last scan
+            if (uiState.locationKey != location.radarKey) return
+            uiState = uiState.copy(error = error)
+            lastFetchMilli = SystemClock.elapsedRealtime()
+            return
         }
         // Drop results for a location that is no longer shown
         if (uiState.locationKey != location.radarKey) return
 
-        uiState = result.fold(
-            onSuccess = { scan ->
-                val current = uiState.scan
-                // Keep the same instance when unchanged (not drawn again); never step back to an
-                // older scan (a lagging server)
-                val keep = current != null && current.station == scan.station &&
-                        scan.productTimeMilli <= current.productTimeMilli
-                uiState.copy(scan = if (keep) current else scan, error = null)
-            },
-            // Keep showing the last scan if a refresh fails
-            onFailure = { uiState.copy(error = it as AppException) }
-        )
+        val current = uiState.scan
+        // Keep the same instance when unchanged (not drawn again); never step back to an older
+        // scan (a lagging server)
+        val keep = current != null && current.station == scan.station &&
+                scan.productTimeMilli <= current.productTimeMilli
+        uiState = uiState.copy(scan = if (keep) current else scan, error = null)
         lastFetchMilli = SystemClock.elapsedRealtime()
     }
 

@@ -11,15 +11,6 @@ import java.util.concurrent.TimeUnit
 
 interface NwsRadarApi {
 
-    // Latest NEXRAD Level 3 file for a radar station (e.g. product "DS.p94r0", station "keax")
-    // Streamed so the caller can limit how much it reads
-    @Streaming
-    @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/sn.last")
-    suspend fun fetchLatestProduct(
-        @Path("product") product: String,
-        @Path("station") station: String
-    ): Response<ResponseBody>
-
     // Folder listing (HTML) of a station's recent files: sn.0000..sn.0250 written in rotation
     @Streaming
     @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/")
@@ -28,6 +19,8 @@ interface NwsRadarApi {
         @Path("station") station: String
     ): Response<ResponseBody>
 
+    // One NEXRAD Level 3 file (e.g. product "DS.p94r0", station "keax", file "sn.last" for the
+    // latest). Streamed so the caller can limit how much it reads
     @Streaming
     @GET("SL.us008001/DF.of/DC.radar/{product}/SI.{station}/{file}")
     suspend fun fetchProduct(

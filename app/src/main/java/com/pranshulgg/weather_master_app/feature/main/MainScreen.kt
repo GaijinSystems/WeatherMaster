@@ -38,7 +38,6 @@ import com.pranshulgg.weather_master_app.core.model.domain.toMessageRes
 import com.pranshulgg.weather_master_app.core.model.domain.weather.Weather
 import com.pranshulgg.weather_master_app.core.model.domain.weather.WeatherBlock
 import com.pranshulgg.weather_master_app.core.model.domain.weather.WeatherUnits
-import com.pranshulgg.weather_master_app.core.model.sources.Capability
 import com.pranshulgg.weather_master_app.core.prefs.LocalAppPrefs
 import com.pranshulgg.weather_master_app.core.prefs.helper.PreferencesHelper
 import com.pranshulgg.weather_master_app.core.ui.navigation.NavRoutes
@@ -50,6 +49,7 @@ import com.pranshulgg.weather_master_app.feature.main.ui.MainScreenDialogs
 import com.pranshulgg.weather_master_app.feature.main.ui.NavigationDrawer
 import com.pranshulgg.weather_master_app.feature.radar.RadarPanel
 import com.pranshulgg.weather_master_app.feature.radar.RadarViewModel
+import com.pranshulgg.weather_master_app.feature.radar.hasRadar
 import com.pranshulgg.weather_master_app.feature.radar.radarOpenSwipe
 import com.pranshulgg.weather_master_app.feature.radar.rememberRadarPanelState
 import com.pranshulgg.weather_master_app.feature.shared.WeatherViewModel
@@ -129,7 +129,7 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
     }
 
     val radarState = rememberRadarPanelState()
-    val isRadarAvailable = activeLocation?.source?.let { Capability.RADAR in it.capabilities } == true
+    val isRadarAvailable = activeLocation?.hasRadar == true
 
     BackHandler(enabled = radarState.isOpen) {
         radarState.close()
@@ -242,7 +242,7 @@ fun MainScreen(navController: NavController, weatherViewModel: WeatherViewModel)
         )
 
         if (isRadarAvailable) {
-            RadarPanel(radarState, activeLocation)
+            RadarPanel(radarState, activeLocation, radarViewModel)
         }
     }
 

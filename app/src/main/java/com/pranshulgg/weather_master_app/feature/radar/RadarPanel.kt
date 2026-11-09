@@ -1,7 +1,9 @@
 package com.pranshulgg.weather_master_app.feature.radar
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -14,30 +16,35 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -50,10 +57,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -75,7 +83,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 private const val MIN_WIDTH_KM = 25.0
@@ -85,6 +95,7 @@ private const val OLD_SCAN_MILLI = 30 * 60 * 1000L
 private const val LOOP_FRAME_SCALE = 0.5f // loop frames are drawn at half resolution
 private const val LOOP_FRAME_MILLI = 500L
 private const val LOOP_HOLD_LAST_MILLI = 1500L // the newest frame stays up longer
+private const val PREPARE_DELAY_MILLI = 1000L // before drawing the closed page
 
 // Loop frames are drawn two at a time, shared by every run: a run cancelled by another zoom
 // finishes its current frames alongside the next run's, so only a few bitmaps are held
@@ -93,21 +104,23 @@ private val LoopRenderDispatcher = Dispatchers.Default.limitedParallelism(2)
 /**
  * Full-width radar page that slides in from the right over the main screen
  * Right swipe, back or the top bar arrow close it; pinch and double-tap zoom around the location
+ *
+ * Composed while closed (not drawn, hidden from accessibility), so it slides in already showing
+ * the map and the latest scan instead of building them during the swipe
  */
 @Composable
-fun RadarPanel(state: RadarPanelState, location: Location) {
+fun RadarPanel(state: RadarPanelState, location: Location, viewModel: RadarViewModel) {
     val isVisible by remember { derivedStateOf { state.isVisible } }
-    if (!isVisible) return
 
-    val viewModel: RadarViewModel = hiltViewModel()
     // Nothing from a previous location
     val uiState = viewModel.uiState.takeIf { it.locationKey == location.radarKey } ?: RadarUiState()
     val scan = uiState.scan
 
-    // Refresh only while the app is started, not in the background
+    // Refresh while the page is visible and the app is started (not in the background); while
+    // closed, the scan is fetched with the weather
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(location.radarKey, lifecycle) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.keepUpdated(location) }
+    LaunchedEffect(location.radarKey, lifecycle, isVisible) {
+        if (isVisible) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.keepUpdated(location) }
     }
 
     var widthKm by rememberSaveable(location.id) { mutableStateOf(DEFAULT_WIDTH_KM) }
@@ -147,9 +160,26 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
             }
         )
 
+    // Keyboard focus left inside when the page closes is cleared, so a hidden button can't be used
+    var hasFocusInside by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(isVisible) {
+        if (!isVisible && hasFocusInside) focusManager.clearFocus(force = true)
+    }
+
     Box(
         Modifier
             .fillMaxSize()
+            .onFocusChanged { hasFocusInside = it.hasFocus }
+            // While closed: not drawn, hidden from accessibility services and not reachable with
+            // the keyboard
+            .drawWithContent { if (isVisible) drawContent() }
+            .then(
+                if (isVisible) Modifier else Modifier
+                    .clearAndSetSemantics {}
+                    .focusProperties { onEnter = { cancelFocusChange() } }
+                    .focusGroup()
+            )
             .then(pageGestures)
     ) {
         Box(
@@ -165,6 +195,7 @@ fun RadarPanel(state: RadarPanelState, location: Location) {
                 scan = scan,
                 loop = uiState.loop?.takeIf { uiState.isLoopOn },
                 isLoopOn = uiState.isLoopOn,
+                isVisible = isVisible,
                 error = uiState.error,
                 widthKm = widthKm,
                 gestureScale = { gestureScale },
@@ -183,6 +214,7 @@ private fun RadarPage(
     scan: RadarScan?,
     loop: List<RadarScan>?,
     isLoopOn: Boolean,
+    isVisible: Boolean,
     error: AppException?,
     widthKm: Double,
     gestureScale: () -> Float,
@@ -192,58 +224,78 @@ private fun RadarPage(
 ) {
     val is24Hr = LocalAppPrefs.current.is24HrTimeFormat
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-                title = {
-                    Column {
-                        Text(
-                            stringResource(R.string.radar),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        if (scan != null) {
+    // Everything drawn for one location starts afresh for the next
+    key(location.radarKey) {
+        // Measured whether or not there is a scan yet, so the layers have a size when one arrives
+        var contentSize by remember { mutableStateOf(IntSize.Zero) }
+        val layers = scan?.let { rememberRadarLayers(it, loop, location, widthKm, contentSize, isVisible) }
+
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            topBar = {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                    title = {
+                        Column {
                             Text(
-                                "${scan.station} · ${formatScanTime(scan.scanTimeMilli, location, is24Hr, isOld(scan.scanTimeMilli))}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodyMedium
+                                stringResource(R.string.radar),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.titleLarge
                             )
+                            if (scan != null) {
+                                Text(
+                                    "${scan.station} · ${formatScanTime(scan.scanTimeMilli, location, is24Hr, isOld(scan.scanTimeMilli))}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
                         }
+                    },
+                    navigationIcon = { NavigateUpBtn(onClick = onClose) },
+                    actions = {
+                        // Shows progress until the loop's frames are drawn
+                        if (layers != null) LoopButton(isLoopOn, isPreparing = isLoopOn && layers.frames == null, onToggleLoop)
                     }
-                },
-                navigationIcon = { NavigateUpBtn(onClick = onClose) }
-            )
-        }
-    ) { padding ->
-        Box(
-            Modifier
-                .padding(padding)
-                .fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            when {
-                // Everything drawn for one location starts afresh for the next
-                scan != null -> key(location.radarKey) {
-                    RadarImage(
-                        scan = scan,
-                        loop = loop,
-                        isLoopOn = isLoopOn,
-                        location = location,
-                        is24Hr = is24Hr,
-                        widthKm = widthKm,
-                        gestureScale = gestureScale,
-                        onToggleLoop = onToggleLoop
-                    )
-                }
-
-                error != null -> ErrorContainer(
-                    onRetry = onRetry,
-                    errorDescription = stringResource(error.toMessageRes())
                 )
+            }
+        ) { padding ->
+            Box(
+                Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .onSizeChanged { contentSize = it },
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    layers?.map != null -> RadarImage(layers, loop, location, is24Hr, widthKm, gestureScale)
 
-                else -> LoadingPlaceholder()
+                    error != null && scan == null -> ErrorContainer(
+                        onRetry = onRetry,
+                        errorDescription = stringResource(error.toMessageRes())
+                    )
+
+                    // Not while closed: its animation would keep running off screen
+                    isVisible -> LoadingPlaceholder()
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LoopButton(isLoopOn: Boolean, isPreparing: Boolean, onClick: () -> Unit) {
+    val label = stringResource(if (isLoopOn) R.string.radar_pause_loop else R.string.radar_play_loop)
+    Tooltip(label, preferredPosition = TooltipAnchorPosition.Below, spacing = 10.dp) {
+        IconButton(onClick = onClick, shapes = IconButtonDefaults.shapes()) {
+            if (isPreparing) {
+                LoadingIndicator(Modifier.size(24.dp))
+            } else {
+                Symbol(
+                    if (isLoopOn) R.drawable.pause_24px else R.drawable.play_arrow_24px,
+                    desc = label,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
             }
         }
     }
@@ -257,18 +309,30 @@ private class LoopFrame(val bitmap: ImageBitmap, val scanTimeMilli: Long)
 /** Time-lapse frames, drawn at lower resolution for a map width */
 private class LoopFrames(val frames: List<LoopFrame>, val widthKm: Double)
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+/** The bitmaps drawn for one location's page: map, latest echoes and the loop's frames */
+@Stable
+private class RadarLayers {
+    var map by mutableStateOf<RenderedLayer?>(null)
+    var echoes by mutableStateOf<RenderedLayer?>(null)
+    var frames by mutableStateOf<LoopFrames?>(null)
+}
+
+/** Bitmaps are uploaded ahead, so the first frame of the slide-in doesn't wait for them */
+private fun Bitmap.toPreparedImage(): ImageBitmap = also { it.prepareToDraw() }.asImageBitmap()
+
+/**
+ * Draws the [RadarLayers] for [scan] and [loop], also while the page is closed so it slides in
+ * ready. While closed it waits a moment first, so this doesn't compete with the main screen
+ */
 @Composable
-private fun RadarImage(
+private fun rememberRadarLayers(
     scan: RadarScan,
     loop: List<RadarScan>?,
-    isLoopOn: Boolean,
     location: Location,
-    is24Hr: Boolean,
     widthKm: Double,
-    gestureScale: () -> Float,
-    onToggleLoop: () -> Unit
-) {
+    size: IntSize,
+    isVisible: Boolean
+): RadarLayers {
     val context = LocalContext.current
     val density = LocalDensity.current.density
     val colorScheme = MaterialTheme.colorScheme
@@ -284,23 +348,23 @@ private fun RadarImage(
             siteLabel = colorScheme.onSurfaceVariant.toArgb()
         )
     }
+    val layers = remember { RadarLayers() }
+    val hasSize = size.width > 0 && size.height > 0
+    val isVisibleNow by rememberUpdatedState(isVisible)
+    // While closed, wait a moment (cut short if the page opens meanwhile)
+    suspend fun waitIfClosed() {
+        if (!isVisibleNow) withTimeoutOrNull(PREPARE_DELAY_MILLI) { snapshotFlow { isVisibleNow }.first { it } }
+    }
 
-    val outlines by produceState<RadarOutlines?>(null) { value = RadarOutlines.load(context) }
-    var size by remember { mutableStateOf(IntSize.Zero) }
-    var map by remember { mutableStateOf<RenderedLayer?>(null) }
-    var echoes by remember { mutableStateOf<RenderedLayer?>(null) }
-    var frames by remember { mutableStateOf<LoopFrames?>(null) }
-    // Read only by the frame and its time, so the rest of the page isn't recomposed every frame
-    val frameIndex = remember { mutableIntStateOf(0) }
-
-    // The map depends only on the radar site, not on each new scan
-    LaunchedEffect(scan.station, scan.latitude, scan.longitude, outlines, widthKm, size, colors) {
-        val loadedOutlines = outlines ?: return@LaunchedEffect
-        if (size.width == 0 || size.height == 0) return@LaunchedEffect
+    // The map depends only on the radar site, not on each new scan. The outlines are only held
+    // while drawing (they are cached softly)
+    LaunchedEffect(scan.station, scan.latitude, scan.longitude, widthKm, size, colors) {
+        if (!hasSize) return@LaunchedEffect
+        waitIfClosed()
         val bitmap = withContext(Dispatchers.Default) {
             RadarRenderer.renderMap(
                 site = scan,
-                outlines = loadedOutlines,
+                outlines = RadarOutlines.load(context),
                 centerLatitude = location.latitude,
                 centerLongitude = location.longitude,
                 widthKm = widthKm,
@@ -308,28 +372,26 @@ private fun RadarImage(
                 heightPx = size.height,
                 density = density,
                 colors = colors
-            )
+            ).toPreparedImage()
         }
-        map = RenderedLayer(bitmap.asImageBitmap(), widthKm)
+        layers.map = RenderedLayer(bitmap, widthKm)
     }
 
     LaunchedEffect(scan, widthKm, size) {
-        if (size.width == 0 || size.height == 0) return@LaunchedEffect
+        if (!hasSize) return@LaunchedEffect
+        waitIfClosed()
         val bitmap = withContext(Dispatchers.Default) {
             RadarRenderer.renderEchoes(
                 scan, location.latitude, location.longitude, widthKm, size.width, size.height
-            )
+            ).toPreparedImage()
         }
-        echoes = RenderedLayer(bitmap.asImageBitmap(), widthKm)
+        layers.echoes = RenderedLayer(bitmap, widthKm)
     }
 
     LaunchedEffect(loop, widthKm, size) {
-        if (loop == null || size.width == 0 || size.height == 0) {
-            frames = null
-            return@LaunchedEffect
-        }
         // Drop the old frames first so two sets aren't held at once (the latest scan shows meanwhile)
-        frames = null
+        layers.frames = null
+        if (loop == null || !hasSize) return@LaunchedEffect
         val rendered = withContext(LoopRenderDispatcher) {
             loop.map { frame ->
                 async {
@@ -344,8 +406,26 @@ private fun RadarImage(
                 }
             }.awaitAll()
         }
-        frames = LoopFrames(rendered, widthKm)
+        layers.frames = LoopFrames(rendered, widthKm)
     }
+
+    return layers
+}
+
+/** Shows the [layers]: the map over the latest scan, or over the loop's frames while playing */
+@Composable
+private fun RadarImage(
+    layers: RadarLayers,
+    loop: List<RadarScan>?,
+    location: Location,
+    is24Hr: Boolean,
+    widthKm: Double,
+    gestureScale: () -> Float
+) {
+    val map = layers.map ?: return
+    val frames = layers.frames
+    // Read only by the frame and its time, so the rest of the page isn't recomposed every frame
+    val frameIndex = remember { mutableIntStateOf(0) }
 
     val frameCount = frames?.frames?.size ?: 0
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -364,53 +444,25 @@ private fun RadarImage(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .onSizeChanged { size = it },
-        contentAlignment = Alignment.Center
-    ) {
-        val currentMap = map ?: return@Box LoadingPlaceholder()
-        val currentFrames = frames
-
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // The loop frame replaces the latest scan while playing
-        if (currentFrames != null) {
-            LoopFrameImage(currentFrames, frameIndex::intValue, widthKm, gestureScale)
+        if (frames != null) {
+            LoopFrameImage(frames, frameIndex::intValue, widthKm, gestureScale)
         } else {
-            echoes?.let { RadarLayerImage(it.bitmap, it.widthKm, widthKm, gestureScale) }
+            layers.echoes?.let { RadarLayerImage(it.bitmap, it.widthKm, widthKm, gestureScale) }
         }
         RadarLayerImage(
-            currentMap.bitmap, currentMap.widthKm, widthKm, gestureScale,
+            map.bitmap, map.widthKm, widthKm, gestureScale,
             contentDescription = stringResource(R.string.radar)
         )
 
-        if (currentFrames != null) {
+        if (frames != null) {
             LoopFrameTime(
-                currentFrames, frameIndex::intValue, location, is24Hr,
+                frames, frameIndex::intValue, location, is24Hr,
                 Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 16.dp)
             )
-        }
-
-        val label = stringResource(if (isLoopOn) R.string.radar_pause_loop else R.string.radar_play_loop)
-        Tooltip(
-            label,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(8.dp)
-        ) {
-            FilledTonalIconButton(onClick = onToggleLoop, shapes = IconButtonDefaults.shapes()) {
-                if (isLoopOn && currentFrames == null) {
-                    LoadingIndicator(Modifier.size(24.dp))
-                } else {
-                    Symbol(
-                        if (isLoopOn) R.drawable.pause_24px else R.drawable.play_arrow_24px,
-                        desc = label,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                }
-            }
         }
     }
 }
